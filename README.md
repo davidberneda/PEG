@@ -3,7 +3,7 @@
 
 ## (Work in progress)
 
-Delphi / Object Pascal implementation for Mr. Bryan Ford ( baford@mit.edu )
+Delphi / Object Pascal implementation of Mr. Bryan Ford ( baford@mit.edu ) paper.
 
 Description:
 
