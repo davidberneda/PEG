@@ -2,6 +2,8 @@
 // 2017
 unit TeePEG_Rules;
 
+{$DEFINE TRACE}
+
 {
   "Parsing Expression Grammars" (PEG)
 
@@ -15,14 +17,26 @@ uses
   Classes;
 
 type
+  TRule=class;
+
+  TStackItem=record
+    Position : Integer;
+    Rules : Array of TRule;
+  end;
+
   TParser=class
   private
-    FPos : Integer;
+    FPosition : Integer;
+  protected
+    procedure Match(const ARule:TRule; const ALength:Integer);
+    function Push:Integer;
+    procedure Pop;
   public
+    Stack : Array of TStackItem;
     Text : String;
 
     function EndOfFile: Boolean; {$IFDEF INLINE}inline;{$ENDIF}
-    property Position:Integer read FPos write FPos;
+    property Position:Integer read FPosition write FPosition;
   end;
 
   TRule=class
@@ -31,14 +45,6 @@ type
   public
     function AsString:String; virtual; abstract;
   end;
-
-  TToken=record
-    Rule : TRule;
-    Start,
-    Length : Integer;
-  end;
-
-  TTokens=Array of TToken;
 
   TOperator=class(TRule)
   public
@@ -67,8 +73,13 @@ type
     function AsString:String; override;
   end;
 
+  TCharacterRule=class(TRule)
+  protected
+    InSet : Boolean;
+  end;
+
   { 'x' }
-  TCharacter=class(TRule)
+  TCharacter=class(TCharacterRule)
   protected
     function Match(const AParser:TParser):Boolean; override;
   public
@@ -78,20 +89,8 @@ type
     function AsString:String; override;
   end;
 
-  { [a-zA-Z_] }
-  TCharSet=set of Char;
-
-  TCharacterSet=class(TRule)
-  protected
-    function Match(const AParser:TParser):Boolean; override;
-  public
-    CharacterSet : TCharSet;
-
-    Constructor Create(const ASet:TCharSet);
-  end;
-
-  { [n-m] }
-  TCharacterRange=class(TRule)
+  { n-m }
+  TCharacterRange=class(TCharacterRule)
   protected
     function Match(const AParser:TParser):Boolean; override;
   public
@@ -126,6 +125,8 @@ type
   TChoice=class(TRule)
   private
     function ToString(const Separator:String):String;
+  protected
+    procedure Add(const AItems: array of TRule);
   public
     Items : TRuleArray;
 
@@ -148,6 +149,16 @@ type
     function AsString:String; override;
   end;
 
+  { [abcA-ZQRS_] }
+  TCharacterSet=class(TPrioritized)
+  protected
+    constructor InnerCreate;
+  public
+    Constructor Create(const AItems: array of TCharacterRule);
+
+    function AsString:String; override;
+  end;
+
   { e* }
   TZeroOrMore=class(TOperator)
   protected
@@ -165,7 +176,7 @@ type
   end;
 
   { e? }
-  TOptional=class(TOperator)
+  TOptional=class(TOperator)  // Zero or One
   protected
     function Match(const AParser:TParser):Boolean; override;
   public
@@ -182,16 +193,34 @@ type
     function AsString:String; override;
   end;
 
+var
+  SingleQuote,
+  DoubleQuote : TCharacter;
+
+  {$IFDEF TRACE}
+  PEG_Log : TStrings;
+  {$ENDIF}
+
 implementation
 
 uses
   SysUtils;
 
+procedure Trace(const ARule:TRule; const AStart:Integer; const AParser: TParser);
+begin
+  {$IFDEF TRACE}
+  if PEG_Log<>nil then
+     PEG_Log.Add(IntToStr(AParser.Position)+' { '+
+          Copy(AParser.Text,AStart,AParser.Position-AStart)+' } '+
+          ARule.ClassName+': '+ARule.AsString);
+  {$ENDIF}
+end;
+
 { TParser }
 
 function TParser.EndOfFile: Boolean;
 begin
-  result:=FPos>Length(Text);
+  result:=FPosition>Length(Text);
 end;
 
 { TSequenceRule }
@@ -205,22 +234,60 @@ function TSequence.Match(const AParser:TParser): Boolean;
 var t : Integer;
     tmp : Integer;
 begin
-  tmp:=AParser.FPos;
+  tmp:=AParser.Push;
 
   for t:=Low(Items) to High(Items) do
       if not Items[t].Match(AParser) then
       begin
         result:=False;
-        AParser.FPos:=tmp;
+        AParser.Pop;
         Exit;
       end;
 
   result:=True;
+
+  Trace(Self,tmp,AParser);
+end;
+
+procedure TParser.Match(const ARule: TRule; const ALength: Integer);
+var L,tmp : Integer;
+begin
+  L:=High(Stack);
+
+  tmp:=Length(Stack[L].Rules);
+  SetLength(Stack[L].Rules,tmp+1);
+  Stack[L].Rules[tmp]:=ARule;
+
+  Inc(FPosition,ALength);
+end;
+
+procedure TParser.Pop;
+var H : Integer;
+begin
+  H:=High(Stack);
+
+  if H<0 then
+     raise Exception.Create('Error: Parser Stack empty');
+
+  FPosition:=Stack[H].Position;
+
+  SetLength(Stack,H);
+end;
+
+function TParser.Push: Integer;
+var L : Integer;
+begin
+  L:=Length(Stack);
+  SetLength(Stack,L+1);
+
+  Stack[L].Position:=Position;
+
+  result:=Position;
 end;
 
 { TOperator }
 
-constructor TOperator.Create(const ARule: TRule);
+Constructor TOperator.Create(const ARule: TRule);
 begin
   inherited Create;
   Rule:=ARule;
@@ -244,6 +311,15 @@ end;
 
 function ToString(const C:Char):String;
 begin
+  if C=SingleQuote.Character then
+     result:=C
+  else
+  if C='[' then
+     result:='\['
+  else
+  if C=']' then
+     result:='\]'
+  else
   if (C<' ') or (C>'z') then
      case C of
         #9: result:='\t';
@@ -261,18 +337,27 @@ end;
 
 function TCharacter.AsString: String;
 begin
-  if Character='’' then
-     result:='[’]'
+  if Character=SingleQuote.Character then
+     if InSet then
+        result:=SingleQuote.Character
+     else
+        result:='['+SingleQuote.Character+']'
   else
-     result:='’'+ToString(Character)+'’';
+  if InSet then
+     result:=ToString(Character)
+  else
+     result:=SingleQuote.Character+ToString(Character)+SingleQuote.Character;
 end;
 
 function TCharacter.Match(const AParser: TParser): Boolean;
 begin
-  result:=AParser.Text[AParser.FPos]=Character;
+  result:=AParser.Text[AParser.Position]=Character;
 
   if result then
-     Inc(AParser.FPos);
+  begin
+    AParser.Match(Self,1);
+    Trace(Self,AParser.Position-1,AParser);
+  end;
 end;
 
 { TString }
@@ -302,24 +387,30 @@ begin
   //else
   begin
     for t:=1 to Length(Text) do
-        if AParser.Text[AParser.FPos+t-1]<>Text[t] then
+        if AParser.Text[AParser.FPosition+t-1]<>Text[t] then
         begin
           result:=False;
           Exit;
         end;
 
     result:=True;
-    Inc(AParser.FPos,Length(Text));
+
+    AParser.Match(Self,Length(Text));
+    Trace(Self,AParser.Position-Length(Text),AParser);
   end;
 end;
 
 { TChoice }
 
 constructor TChoice.Create(const AItems: array of TRule);
-var t : Integer;
 begin
   inherited Create;
+  Add(AItems);
+end;
 
+procedure TChoice.Add(const AItems: array of TRule);
+var t : Integer;
+begin
   SetLength(Items,Length(AItems));
 
   for t:=Low(AItems) to High(AItems) do
@@ -358,34 +449,29 @@ end;
 
 function TCharacterRange.AsString: String;
 begin
-  result:='['+Start+'-'+Finish+']';
+  if InSet then
+     result:=''
+  else
+     result:='[';
+
+  result:=result+Start+'-'+Finish;
+
+  if not InSet then
+     result:=result+']';
 end;
 
 function TCharacterRange.Match(const AParser: TParser): Boolean;
 var tmp : Char;
 begin
-  tmp:=AParser.Text[AParser.FPos];
+  tmp:=AParser.Text[AParser.Position];
 
   result:=(tmp>=Start) and (tmp<=Finish);
 
   if result then
-     Inc(AParser.FPos);
-end;
-
-{ TCharacterSet }
-
-constructor TCharacterSet.Create(const ASet: TCharSet);
-begin
-  inherited Create;
-  CharacterSet:=ASet;
-end;
-
-function TCharacterSet.Match(const AParser: TParser): Boolean;
-begin
-  result:=AParser.Text[AParser.FPos] in CharacterSet;
-
-  if result then
-     Inc(AParser.FPos);
+  begin
+    AParser.Match(Self,1);
+    Trace(Self,AParser.Position-1,AParser);
+  end;
 end;
 
 { TAnyCharacter }
@@ -400,7 +486,10 @@ begin
   result:=not AParser.EndOfFile;
 
   if result then
-     Inc(AParser.FPos);
+  begin
+    AParser.Match(Self,1);
+    Trace(Self,AParser.Position-1,AParser);
+  end;
 end;
 
 { TZeroOrMore }
@@ -411,11 +500,16 @@ begin
 end;
 
 function TZeroOrMore.Match(const AParser: TParser): Boolean;
+var tmp : Integer;
 begin
   result:=True;
 
+  tmp:=AParser.Position;
+
   repeat
   until not Rule.Match(AParser);
+
+  Trace(Self,tmp,AParser);
 end;
 
 { TOneOrMore }
@@ -426,12 +520,20 @@ begin
 end;
 
 function TOneOrMore.Match(const AParser: TParser): Boolean;
+var tmp : Integer;
 begin
+  tmp:=AParser.Position;
+
   result:=Rule.Match(AParser);
 
   if result then
-     repeat
-     until not Rule.Match(AParser);
+  begin
+
+    repeat
+    until not Rule.Match(AParser);
+
+    Trace(Self,tmp,AParser);
+  end;
 end;
 
 { TPrioritized }
@@ -445,17 +547,19 @@ function TPrioritized.Match(const AParser: TParser): Boolean;
 var tmp : Integer;
     t : Integer;
 begin
-  tmp:=AParser.FPos;
-
   for t:=Low(Items) to High(Items) do
   begin
-    AParser.FPos:=tmp;
+    tmp:=AParser.Push;
 
     if Items[t].Match(AParser) then
     begin
       result:=True;
+      Trace(Self,tmp,AParser);
+
       Exit;
-    end;
+    end
+    else
+      AParser.Pop;
   end;
 
   result:=False;
@@ -471,12 +575,14 @@ end;
 function TNotPredicate.Match(const AParser: TParser): Boolean;
 var tmp : Integer;
 begin
-  tmp:=AParser.FPos;
+  tmp:=AParser.Push;
 
   result:=not Rule.Match(AParser);
 
-  if not result then
-     AParser.FPos:=tmp;
+  if result then
+     Trace(Self,tmp,AParser)
+  else
+     AParser.Pop;
 end;
 
 { TAndPredicate }
@@ -489,11 +595,13 @@ end;
 function TAndPredicate.Match(const AParser: TParser): Boolean;
 var tmp : Integer;
 begin
-  tmp:=AParser.FPos;
+  tmp:=AParser.Push;
 
   result:=Rule.Match(AParser);
 
-  AParser.FPos:=tmp;
+  Trace(Self,tmp,AParser);
+
+  AParser.Pop;
 end;
 
 { TNamedRule }
@@ -510,8 +618,14 @@ begin
 end;
 
 function TNamedRule.Match(const AParser: TParser): Boolean;
+var tmp : Integer;
 begin
+  tmp:=AParser.Position;
+
   result:=Rule.Match(AParser);
+
+  if result then
+     Trace(Self,tmp,AParser);
 end;
 
 { TOptional }
@@ -522,10 +636,52 @@ begin
 end;
 
 function TOptional.Match(const AParser: TParser): Boolean;
+var tmp : Integer;
 begin
+  tmp:=AParser.Position;
+
   result:=True;
 
-  Rule.Match(AParser);
+  if Rule.Match(AParser) then
+     Trace(Self,tmp,AParser);
 end;
 
+{ TCharacterSet }
+
+function TCharacterSet.AsString: String;
+begin
+  result:='['+ToString('')+']';
+end;
+
+constructor TCharacterSet.InnerCreate;
+begin
+end;
+
+constructor TCharacterSet.Create(const AItems: array of TCharacterRule);
+var t : Integer;
+begin
+  InnerCreate;
+
+  SetLength(Items,Length(AItems));
+
+  for t:=Low(AItems) to High(AItems) do
+  begin
+    AItems[t].InSet:=True;
+
+    Items[t-Low(AItems)]:=AItems[t];
+  end;
+end;
+
+initialization
+  // There are different single quotes:
+  // ’ = #146
+  // ´ = #180
+  // ' = #39
+  // ` = #96
+
+  SingleQuote:=TCharacter.Create(#146);
+  DoubleQuote:=TCharacter.Create('"');
+finalization
+  DoubleQuote.Free;
+  SingleQuote.Free;
 end.

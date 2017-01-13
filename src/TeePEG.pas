@@ -19,13 +19,10 @@ type
   private
     FParser : TParser;
 
-    procedure AddToken(const ARule:TRule; const AStart:Integer);
     procedure Load; overload;
   protected
     function Match(const AParser:TParser):Boolean; override;
   public
-    Tokens : TTokens;
-
     Constructor Create;
     Destructor Destroy; override;
 
@@ -33,7 +30,8 @@ type
     function AsString:String; override;
     function Find:TRule;
     procedure Load(const S:String); overload;
-    function TokenText(const AToken:TToken):String;
+
+    property Parser:TParser read FParser;
   end;
 
   TPEG=class
@@ -45,8 +43,6 @@ type
 
     procedure Load(const S:String); overload;
     procedure Load(const S:TStrings); overload;
-
-    function Tokens:TTokens;
   end;
 
 implementation
@@ -106,22 +102,6 @@ begin
   Load;
 end;
 
-function TRules.TokenText(const AToken: TToken): String;
-begin
-  result:=Copy(FParser.Text,AToken.Start,AToken.Length);
-end;
-
-procedure TRules.AddToken(const ARule:TRule; const AStart: Integer);
-var L : Integer;
-begin
-  L:=Length(Tokens);
-  SetLength(Tokens,L+1);
-
-  Tokens[L].Rule:=ARule;
-  Tokens[L].Start:=AStart;
-  Tokens[L].Length:=FParser.Position-AStart;
-end;
-
 type
   TRuleAccess=class(TRule);
 
@@ -152,7 +132,8 @@ begin
     if tmp=nil then
        raise Exception.Create('Invalid syntax at position: '+IntToStr(Start))
     else
-       AddToken(tmp,Start);
+    if FParser.Position=Start then
+       raise Exception.Create('Inifite loop at position: '+IntToStr(Start));
 
   until FParser.EndOfFile;
 end;
@@ -188,11 +169,6 @@ end;
 procedure TPEG.Load(const S: TStrings);
 begin
   Load(S.Text);
-end;
-
-function TPEG.Tokens: TTokens;
-begin
-  result:=Rules.Tokens;
 end;
 
 end.

@@ -25,26 +25,29 @@ implementation
 class procedure TGrammar.AddTo(var Items:TRuleArray);
 var EndOfFile,
     AnyCharacter,
-    Return,
-    NewLine,
     LineFeed,
     EndOfLine,
     Space,
     Comment,
+    SpaceOrComment,
     Spacing,
+    NeedsSpacing,
     DOT, CLOSE, OPEN, PLUS, STAR, QUESTION, _NOT, _AND, SLASH, LEFTARROW,
 
-    BackSlash, RightBracket,
-
     CharRule, Range, ClassRule,
-
-    SingleQuote, DoubleQuote,
 
     Literal, IdentCont, IdentStart, Identifier,
 
     Primary, Suffix, Prefix, Sequence, Expression, Definition, Grammar
 
      : TRule;
+
+    Tab,
+    Return,
+    NewLine,
+    BackSlash,
+    LeftBracket,
+    RightBracket : TCharacter;
 
   procedure Add(const ARule:TRule);
   var L : Integer;
@@ -83,7 +86,9 @@ var EndOfFile,
     Add(SLASH);
     Add(LEFTARROW);
 
+    Add(NeedsSpacing);
     Add(Spacing);
+    Add(SpaceOrComment);
     Add(Comment);
     Add(Space);
     Add(EndOfLine);
@@ -96,6 +101,7 @@ var EndOfFile,
   end;
 
 var
+  Escapable : TCharacterSet;
   ParentExpression : TSequence;
 
 begin
@@ -105,12 +111,13 @@ begin
 
   Return:=TCharacter.Create(#13);
   NewLine:=TCharacter.Create(#10);
+  Tab:=TCharacter.Create(#9);
   LineFeed:=TString.Create(#13#10);
 
   EndOfLine:=TNamedRule.Create('EndOfLine',TPrioritized.Create([LineFeed,NewLine,Return]));
 
   Space:=TNamedRule.Create('Space',TPrioritized.Create([TCharacter.Create(' '),
-                              TCharacter.Create(#9),
+                              Tab,
                               EndOfLine])
               );
 
@@ -128,7 +135,11 @@ begin
                              ])
               );
 
-  Spacing:=TNamedRule.Create('Spacing',TZeroOrMore.Create(TPrioritized.Create([Space,Comment])));
+  SpaceOrComment:=TNamedRule.Create('SpaceOrComment',TPrioritized.Create([Space,Comment]));
+
+  Spacing:=TNamedRule.Create('Spacing',TZeroOrMore.Create(SpaceOrComment));
+
+  NeedsSpacing:=TNamedRule.Create('NeedsSpacing',TOneOrMore.Create(SpaceOrComment));
 
   DOT:=CharSpacing('DOT','.');
   CLOSE:=CharSpacing('CLOSE',')');
@@ -143,14 +154,29 @@ begin
   LEFTARROW:=TNamedRule.Create('LEFTARROW',TSequence.Create([TString.Create('<-'),Spacing]));
 
   BackSlash:=TCharacter.Create('\');
+  LeftBracket:=TCharacter.Create('[');
+  RightBracket:=TCharacter.Create(']');
+
+  Escapable:=TCharacterSet.Create([
+               TCharacter.Create('n'),
+               TCharacter.Create('r'),
+               TCharacter.Create('t'),
+               TCharacter.Create(SingleQuote.Character),
+               TCharacter.Create(DoubleQuote.Character),
+               TCharacter.Create(LeftBracket.Character),
+               TCharacter.Create(RightBracket.Character),
+               TCharacter.Create(BackSlash.Character)
+             ]);
 
   CharRule:=TNamedRule.Create('Char',
                 TPrioritized.Create([
-                                   TSequence.Create([ BackSlash, TString.Create('"\') ]),
+                                   TSequence.Create([ BackSlash, Escapable ]),
+
                                    TSequence.Create([ BackSlash,
                                                       TCharacterRange.Create('0','2'),
                                                       TCharacterRange.Create('0','7'),
                                                       TCharacterRange.Create('0','7') ]),
+
                                    TSequence.Create([ BackSlash,
                                                       TCharacterRange.Create('0','7'),
                                                       TOptional.Create(
@@ -169,11 +195,9 @@ begin
             ])
            );
 
-  RightBracket:=TCharacter.Create(']');
-
   ClassRule:=TNamedRule.Create('Class',
                TSequence.Create([
-                 TCharacter.Create('['),
+                 LeftBracket,
                  TZeroOrMore.Create(
                     TSequence.Create(
                         [ TNotPredicate.Create(RightBracket), Range ]
@@ -183,9 +207,6 @@ begin
                  Spacing
                ])
               );
-
-  SingleQuote:=TCharacter.Create('’');
-  DoubleQuote:=TCharacter.Create('"');
 
   Literal:=TNamedRule.Create('Literal',
              TPrioritized.Create([
@@ -215,7 +236,7 @@ begin
            );
 
   IdentStart:=TNamedRule.Create('IdentStart',
-               TPrioritized.Create([
+                TCharacterSet.Create([
                  TCharacterRange.Create('a','z'),
                  TCharacterRange.Create('A','Z'),
                  TCharacter.Create('_')
@@ -237,7 +258,7 @@ begin
                 ])
               );
 
-  ParentExpression:=TSequence.Create([ OPEN, Expression, CLOSE] );
+  ParentExpression:=TSequence.Create([OPEN, Expression, CLOSE] );
 
   Primary:=TNamedRule.Create('Primary',
               TPrioritized.Create([
@@ -269,7 +290,12 @@ begin
             ])
           );
 
-  Sequence:=TNamedRule.Create('Sequence',TZeroOrMore.Create(Prefix));
+  Sequence:=TNamedRule.Create('Sequence',
+               TSequence.Create([
+                 Prefix,
+                 TZeroOrMore.Create(Prefix)
+               ])
+             );
 
   Expression:=TNamedRule.Create('Expression',
                TSequence.Create([
