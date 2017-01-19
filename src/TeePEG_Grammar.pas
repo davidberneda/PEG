@@ -26,6 +26,9 @@ type
 
     procedure Add(const ARule:TRule);
     function AsString:String; override;
+
+    class function From(const AItem:PSyntaxItem):TGrammar; static;
+
     function Load(const S:String):TGrammar; overload;
 
     property Parser:TParser read FParser;
@@ -57,6 +60,11 @@ begin
 
   FParser.Free;
   inherited;
+end;
+
+class function TGrammar.From(const AItem: PSyntaxItem): TGrammar;
+begin
+  result:=TGrammar.Create;
 end;
 
 function TGrammar.AsString: String;
@@ -116,16 +124,12 @@ begin
     else
     if tmp.Rule is TGrammar then
     begin
-      result:=TGrammar(tmp.Rule);
+      FParser.Syntax:=tmp;
+      result:=TGrammar.From(tmp);
       Exit;
     end
     else
-    begin
-      if result=nil then
-         result:=TGrammar.Create;
-
-      result.Add(tmp.Rule);
-    end;
+      DoError('Grammar expected. Found: '+tmp.Rule.ClassName);
 
   until FParser.EndOfFile;
 end;

@@ -67,7 +67,10 @@ procedure AddSyntax(const PEG:TPeg; const ATree:TTreeView);
        tmp:=AItem.Rule.ClassName;
 
     tmp:=tmp+' -> '+IntToStr(AItem.Position);
-    
+
+    if AItem.Length>0 then
+       tmp:=tmp+' '+Copy(PEG.Grammar.Parser.Text,AItem.Position,AItem.Length);
+
     result:=ATree.Items.AddChildObject(AParent,tmp,AItem);
   end;
   
@@ -137,19 +140,33 @@ begin
     // tmp:='11';
 
     if PageControl1.ActivePage=TabPEG then
-       tmp:=PEGPEG.Text
+    begin
+      tmp:=PEGPEG.Text;
+      SingleQuote.Character:=#146;
+    end
     else
-       tmp:=MathPEG.Text;
+    begin
+      tmp:=MathPEG.Text;
+      SingleQuote.Character:='''';
+    end;
 
     //tmp:='\t';
 
     try
       Grammar:=PEG.Load(tmp{Memo1.Lines});
 
+      {
+      if Grammar<>nil then
+      begin
+        MemoRules.Lines.Add('');
+        MemoRules.Lines.Add(Grammar.AsString);
+      end;
+      }
+
     finally
       if CBTokens.Checked then
          AddSyntax(PEG, TreeView1);
- 
+
       MemoRules.Clear;
       MemoRules.Lines.Add('Parsed: '+tmp);
     end;

@@ -20,7 +20,8 @@ type
   PSyntaxItem=^TSyntaxItem;
 
   TSyntaxItem=record
-    Position : Integer;
+    Position,
+    Length : Integer;
     Rule : TRule;
 
     Items : Array of PSyntaxItem;
@@ -29,9 +30,11 @@ type
   TParser=class
   private
     FPosition : Integer;
-  protected
-    procedure Match(const AParent:PSyntaxItem; const ARule:TRule; const ALength:Integer);
+
+    function Advance(const ARule:TRule; const ALength:Integer):PSyntaxItem;
+    procedure Add(const AParent,AChild:PSyntaxItem);
     procedure Pop(const AItem:PSyntaxItem);
+  protected
   public
     Syntax : PSyntaxItem;
     Text : String;
@@ -209,15 +212,18 @@ var
   DoubleQuote : TCharacter;
 
   PEG_Log : TStrings;
+  PEG_Log_AllRules : Boolean=False;
 
 implementation
 
 uses
   SysUtils;
 
-procedure Trace(const ARule:TRule; const AStart:Integer; const AParser: TParser);
+procedure Log(const ARule:TRule; const AStart:Integer; const AParser: TParser);
 begin
   if PEG_Log<>nil then
+     if PEG_Log_AllRules or (ARule is TNamedRule) then
+
      PEG_Log.Add(IntToStr(AParser.Position)+' { '+
           Copy(AParser.Text,AStart,AParser.Position-AStart)+' } '+
           ARule.ClassName+': '+ARule.AsString);
@@ -248,35 +254,47 @@ end;
 
 function TSequence.Match(const AParser:TParser): PSyntaxItem;
 var t : Integer;
+    tmp : PSyntaxItem;
 begin
   result:=Push(AParser.Position);
 
   for t:=Low(Items) to High(Items) do
-      if Items[t].Match(AParser)=nil then
-      begin
-        AParser.Pop(result);
-        result:=nil;
-        Exit;
-      end;
+  begin
+    tmp:=Items[t].Match(AParser);
 
-  Trace(Self,result.Position,AParser);
+    if tmp=nil then
+    begin
+      AParser.Pop(result);
+      result:=nil;
+      Exit;
+    end
+    else
+      AParser.Add(result,tmp);
+  end;
+
+  result.Length:=AParser.Position-result.Position+1;
+
+  Log(Self,result.Position,AParser);
 end;
 
-procedure TParser.Match(const AParent:PSyntaxItem; const ARule: TRule; const ALength: Integer);
-var L : Integer;
-    tmp : PSyntaxItem;
+function TParser.Advance(const ARule:TRule; const ALength:Integer):PSyntaxItem;
 begin
-  New(tmp);
+  result:=ARule.Push(FPosition);
 
-  tmp.Position:=FPosition;
-  tmp.Rule:=ARule;
+  result.Length:=ALength;
 
+  Log(ARule,FPosition,Self);
+
+  Inc(FPosition,ALength);
+end;
+
+procedure TParser.Add(const AParent,AChild:PSyntaxItem);
+var L : Integer;
+begin
   L:=Length(AParent.Items);
   SetLength(AParent.Items,L+1);
 
-  AParent.Items[L]:=tmp;
-
-  Inc(FPosition,ALength);
+  AParent.Items[L]:=AChild;
 end;
 
 procedure DisposeItem(const AItem:PSyntaxItem);
@@ -383,14 +401,9 @@ end;
 function TCharacter.Match(const AParser: TParser): PSyntaxItem;
 begin
   if CharacterMatch(AParser.Text[AParser.Position],Character) then
-  begin
-    result:=Push(AParser.Position);
-
-    AParser.Match(result,Self,1);
-    Trace(Self,AParser.Position-1,AParser);
-  end
+     result:=AParser.Advance(Self,1)
   else
-    result:=nil;
+     result:=nil;
 end;
 
 { TString }
@@ -422,10 +435,7 @@ begin
         Exit;
       end;
 
-  result:=Push(AParser.Position);
-
-  AParser.Match(result,Self,Length(Text));
-  Trace(Self,AParser.Position-Length(Text),AParser);
+  result:=AParser.Advance(Self,Length(Text));
 end;
 
 { TChoice }
@@ -503,13 +513,9 @@ begin
     tmpMatch:=(tmp>=Start) and (tmp<=Finish);
 
   if tmpMatch then
-  begin
-    result:=Push(AParser.Position);
-    AParser.Match(result,Self,1);
-    Trace(Self,AParser.Position-1,AParser);
-  end
+     result:=AParser.Advance(Self,1)
   else
-    result:=nil;
+     result:=nil;
 end;
 
 { TAnyCharacter }
@@ -524,11 +530,7 @@ begin
   if AParser.EndOfFile then
      result:=nil
   else
-  begin
-    result:=Push(AParser.Position);
-    AParser.Match(result,Self,1);
-    Trace(Self,AParser.Position-1,AParser);
-  end;
+     result:=AParser.Advance(Self,1);
 end;
 
 { TZeroOrMore }
@@ -539,16 +541,20 @@ begin
 end;
 
 function TZeroOrMore.Match(const AParser: TParser): PSyntaxItem;
-var tmp : Integer;
+var tmp : PSyntaxItem;
 begin
   result:=Push(AParser.Position);
 
-  tmp:=AParser.Position;
-
   repeat
-  until Rule.Match(AParser)=nil;
+    tmp:=Rule.Match(AParser);
 
-  Trace(Self,tmp,AParser);
+    if tmp<>nil then
+       AParser.Add(result,tmp);
+
+  until tmp=nil;
+
+  if result.Items<>nil then
+     Log(Self,result.Position,AParser);
 end;
 
 { TOneOrMore }
@@ -559,20 +565,32 @@ begin
 end;
 
 function TOneOrMore.Match(const AParser: TParser): PSyntaxItem;
+var tmp : PSyntaxItem;
 begin
   result:=Push(AParser.Position);
 
-  if Rule.Match(AParser)=nil then
+  tmp:=Rule.Match(AParser);
+
+  if tmp=nil then
   begin
     AParser.Pop(result);
     result:=nil;
   end
   else
   begin
-    repeat
-    until Rule.Match(AParser)=nil;
+    AParser.Add(result,tmp);
 
-    Trace(Self,result.Position,AParser);
+    repeat
+      tmp:=Rule.Match(AParser);
+
+      if tmp<>nil then
+         AParser.Add(result,tmp);
+
+    until tmp=nil;
+
+    result.Length:=AParser.Position-result.Position+1;
+
+    Log(Self,result.Position,AParser);
   end;
 end;
 
@@ -585,14 +603,22 @@ end;
 
 function TPrioritized.Match(const AParser: TParser): PSyntaxItem;
 var t : Integer;
+    tmp : PSyntaxItem;
 begin
   for t:=Low(Items) to High(Items) do
   begin
     result:=Push(AParser.Position);
 
-    if Items[t].Match(AParser)<>nil then
+    tmp:=Items[t].Match(AParser);
+
+    if tmp<>nil then
     begin
-      Trace(Self,result.Position,AParser);
+      AParser.Add(result,tmp);
+
+      //AParser.Match(result,Self,AParser.Position-result.Position);
+
+      Log(Self,result.Position,AParser);
+
       Exit;
     end
     else
@@ -610,14 +636,20 @@ begin
 end;
 
 function TNotPredicate.Match(const AParser: TParser): PSyntaxItem;
+var tmp : PSyntaxItem;
 begin
   result:=Push(AParser.Position);
 
-  if Rule.Match(AParser)=nil then
-     Trace(Self,result.Position,AParser)
+  tmp:=Rule.Match(AParser);
+
+  if tmp=nil then
+     Log(Self,result.Position,AParser)
   else
   begin
+    DisposeItem(tmp);
+
     AParser.Pop(result);
+
     result:=nil;
   end;
 end;
@@ -636,7 +668,7 @@ begin
 
   result:=Rule.Match(AParser);
 
-  Trace(Self,tmp.Position,AParser);
+  Log(Self,tmp.Position,AParser);
 
   AParser.Pop(tmp);
 end;
@@ -655,16 +687,23 @@ begin
 end;
 
 function TNamedRule.Match(const AParser: TParser): PSyntaxItem;
+var tmp : PSyntaxItem;
 begin
   result:=Push(AParser.Position);
 
-  if Rule.Match(AParser)=nil then
+  tmp:=Rule.Match(AParser);
+
+  if tmp=nil then
   begin
     AParser.Pop(result);
     result:=nil;
   end
   else
-    Trace(Self,result.Position,AParser);
+  begin
+    AParser.Add(result,tmp);
+    //AParser.Match(result,Self,AParser.Position-result.Position);
+    Log(Self,result.Position,AParser);
+  end;
 end;
 
 { TOptional }
@@ -675,11 +714,17 @@ begin
 end;
 
 function TOptional.Match(const AParser: TParser): PSyntaxItem;
+var tmp : PSyntaxItem;
 begin
   result:=Push(AParser.Position);
 
-  if Rule.Match(AParser)<>nil then
-     Trace(Self,result.Position,AParser);
+  tmp:=Rule.Match(AParser);
+
+  if tmp<>nil then
+  begin
+    AParser.Add(result,tmp);
+    Log(Self,result.Position,AParser);
+  end;
 end;
 
 { TCharacterSet }
