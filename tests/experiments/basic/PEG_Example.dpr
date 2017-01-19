@@ -1,7 +1,6 @@
 program PEG_Example;
 
 uses
-//  FastMM4,
   Forms,
   Unit_Main in 'Unit_Main.pas' {Form1};
 

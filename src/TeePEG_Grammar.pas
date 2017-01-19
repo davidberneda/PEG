@@ -15,14 +15,132 @@ uses
   TeePEG_Rules;
 
 type
-  TGrammar=class
+  TGrammar=class(TPrioritized)
+  private
+    FParser : TParser;
+
+    function Load:TGrammar; overload;
   public
-    class procedure AddTo(var Items:TRuleArray);
+    Constructor Create;
+    Destructor Destroy; override;
+
+    procedure Add(const ARule:TRule);
+    function AsString:String; override;
+    function Load(const S:String):TGrammar; overload;
+
+    property Parser:TParser read FParser;
+  end;
+
+  TPEGGrammar=class(TGrammar)
+  public
+    Constructor Create;
   end;
 
 implementation
 
-class procedure TGrammar.AddTo(var Items:TRuleArray);
+uses
+  SysUtils;
+
+{ TGrammar }
+
+Constructor TGrammar.Create;
+begin
+  inherited Create([]);
+  FParser:=TParser.Create;
+end;
+
+Destructor TGrammar.Destroy;
+var t : Integer;
+begin
+  for t:=Low(Items) to High(Items) do
+      Items[t].Free;
+
+  FParser.Free;
+  inherited;
+end;
+
+function TGrammar.AsString: String;
+const
+  LeftArrow=' <- ';
+
+var t : Integer;
+begin
+  result:='';
+
+  for t:=0 to High(Items) do
+  begin
+    if t>0 then
+       result:=result+#13#10;
+
+    if Items[t] is TNamedRule then
+    begin
+      result:=result+TNamedRule(Items[t]).Name;
+      result:=result+LeftArrow+TOperator(Items[t]).Rule.AsString;
+    end
+    else
+      result:=result+'Error:'+LeftArrow+Items[t].AsString;
+  end;
+end;
+
+function TGrammar.Load(const S: String):TGrammar;
+begin
+  FParser.Start(S);
+  result:=Load;
+end;
+
+function TGrammar.Load:TGrammar;
+var
+  Start : Integer;
+
+  procedure DoError(const S:String);
+  begin
+    raise Exception.Create(S+' At: '+IntToStr(Start));
+  end;
+
+var tmp : PSyntaxItem;
+begin
+  result:=nil;
+
+  FParser.Position:=1;
+
+  repeat
+    Start:=FParser.Position;
+
+    tmp:=Match(FParser);
+
+    if tmp=nil then
+       DoError('Invalid syntax')
+    else
+    if FParser.Position=Start then
+       DoError('Infinite loop')
+    else
+    if tmp.Rule is TGrammar then
+    begin
+      result:=TGrammar(tmp.Rule);
+      Exit;
+    end
+    else
+    begin
+      if result=nil then
+         result:=TGrammar.Create;
+
+      result.Add(tmp.Rule);
+    end;
+
+  until FParser.EndOfFile;
+end;
+
+procedure TGrammar.Add(const ARule: TRule);
+var L : Integer;
+begin
+  L:=Length(Items);
+  SetLength(Items,L+1);
+  Items[L]:=ARule;
+end;
+
+{ TPEGGrammar }
+
+Constructor TPEGGrammar.Create;
 var EndOfFile,
     AnyCharacter,
     LineFeed,
@@ -105,6 +223,8 @@ var
   ParentExpression : TSequence;
 
 begin
+  inherited;
+
   AnyCharacter:=TAnyCharacter.Create;
 
   EndOfFile:=TNamedRule.Create('EndOfFile',TNotPredicate.Create(AnyCharacter));

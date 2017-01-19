@@ -4,24 +4,41 @@ interface
 
 uses
   Windows, Messages, SysUtils, Variants, Classes, Graphics, Controls, Forms,
-  Dialogs, StdCtrls, TeePeg, ComCtrls;
+  Dialogs, StdCtrls, ComCtrls, 
+
+  TeePeg, TeePeg_Grammar, Vcl.ExtCtrls;
 
 type
   TForm1 = class(TForm)
-    Memo2: TMemo;
     Button1: TButton;
-    Memo3: TMemo;
     PageControl1: TPageControl;
     TabPEG: TTabSheet;
     TabMath: TTabSheet;
     MathPEG: TMemo;
     PEGPEG: TMemo;
+    CBTrace: TCheckBox;
+    CBTokens: TCheckBox;
+    PageControl2: TPageControl;
+    TabRules: TTabSheet;
+    MemoRules: TMemo;
+    TabTrace: TTabSheet;
+    MemoTrace: TMemo;
+    TabSyntax: TTabSheet;
+    TabEval: TTabSheet;
+    Panel1: TPanel;
+    MemoEval: TMemo;
+    MemoOutput: TMemo;
+    TreeView1: TTreeView;
     procedure FormCreate(Sender: TObject);
     procedure Button1Click(Sender: TObject);
     procedure FormDestroy(Sender: TObject);
+    procedure CBTraceClick(Sender: TObject);
+    procedure MemoEvalChange(Sender: TObject);
   private
     { Private declarations }
+
     PEG : TPEG;
+    Grammar : TGrammar;
   public
     { Public declarations }
   end;
@@ -36,55 +53,58 @@ implementation
 uses
   TeePEG_Rules;
 
-procedure AddTokens(const PEG:TPeg; const AStrings:TStrings);
+procedure AddSyntax(const PEG:TPeg; const ATree:TTreeView);
 
-  procedure ShowStack(const AParser:TParser);
-
-    procedure ShowRules(const AIdent:String; const ARules:Array of TRule; const APos:Integer);
-    var t : Integer;
-        tmp : String;
-    begin
-      for t:=0 to High(ARules) do
-      begin
-        if ARules[t] is TNamedRule then
-           tmp:=TNamedRule(ARules[t]).Name
-        else
-           tmp:=ARules[t].ClassName;
-
-        AStrings.Add(AIdent+tmp+' -> '+IntToStr(APos));
-      end;
-    end;
-
-  var Ident : String;
-      t : Integer;
+  function NodeFrom(const AParent:TTreeNode; const AItem:PSyntaxItem):TTreeNode;
+  var tmp : String;
   begin
-    Ident:='';
+    if AItem.Rule=nil then
+       tmp:='?'
+    else
+    if AItem.Rule is TNamedRule then
+       tmp:=TNamedRule(AItem.Rule).Name
+    else
+       tmp:=AItem.Rule.ClassName;
 
-    for t:=Low(AParser.Stack) to High(AParser.Stack) do
-    begin
-      ShowRules(Ident,AParser.Stack[t].Rules,AParser.Stack[t].Position);
-      Ident:=Ident+' ';
-    end;
+    tmp:=tmp+' -> '+IntToStr(AItem.Position);
+    
+    result:=ATree.Items.AddChildObject(AParent,tmp,AItem);
+  end;
+  
+  procedure ShowStack(const AParent:TTreeNode; const AItem:PSyntaxItem);
+  var t : Integer;
+      tmp : TTreeNode;
+  begin
+    tmp:=NodeFrom(AParent,AItem);
+
+    for t:=Low(AItem.Items) to High(AItem.Items) do
+        ShowStack(tmp,AItem.Items[t]);
   end;
 
 begin
-  AStrings.BeginUpdate;
+  ATree.Items.BeginUpdate;
   try
-    AStrings.Clear;
+    ATree.Items.Clear;
 
-    ShowStack(Peg.Rules.Parser);
+    ShowStack(nil,Peg.Grammar.Parser.Syntax);
   finally
-    AStrings.EndUpdate;
+    ATree.Items.EndUpdate;
   end;
+end;
+
+procedure TForm1.CBTraceClick(Sender: TObject);
+begin
+  if CBTrace.Checked then
+     PEG_Log:=MemoTrace.Lines
+  else
+     PEG_Log:=nil;
 end;
 
 procedure TForm1.FormCreate(Sender: TObject);
 begin
-  PEG_Log:=Memo3.Lines;
-
   PEG:=TPEG.Create;
 
-  Memo2.Lines.Text:=PEG.Rules.AsString;
+  MemoRules.Lines.Text:=PEG.Grammar.AsString;
 end;
 
 procedure TForm1.Button1Click(Sender: TObject);
@@ -105,9 +125,12 @@ procedure TForm1.Button1Click(Sender: TObject);
 
 var tmp : String;
 begin
-  PEG_Log.BeginUpdate;
+  if PEG_Log<>nil then
+     PEG_Log.BeginUpdate;
+
   try
-    PEG_Log.Clear;
+    if PEG_Log<>nil then
+       PEG_Log.Clear;
 
     //tmp:=Memo1.Lines[21]; //FirstLines(22);
 
@@ -121,22 +144,40 @@ begin
     //tmp:='\t';
 
     try
-      PEG.Load(tmp{Memo1.Lines});
-    finally
-      AddTokens(PEG, Memo2.Lines);
+      Grammar:=PEG.Load(tmp{Memo1.Lines});
 
-      Memo2.Lines.Add('');
-      Memo2.Lines.Add('Parsed: '+tmp);
+    finally
+      if CBTokens.Checked then
+         AddSyntax(PEG, TreeView1);
+ 
+      MemoRules.Clear;
+      MemoRules.Lines.Add('Parsed: '+tmp);
     end;
 
   finally
-    PEG_Log.EndUpdate;
+    if PEG_Log<>nil then
+       PEG_Log.EndUpdate;
   end;
 end;
 
 procedure TForm1.FormDestroy(Sender: TObject);
 begin
+//  Grammar.Free;
   PEG.Free;
+end;
+
+procedure TForm1.MemoEvalChange(Sender: TObject);
+var tmp : TGrammar;
+begin
+  if Grammar<>nil then
+  begin
+    tmp:=Grammar.Load(MemoEval.Text);
+    try
+      MemoOutput.Text:=tmp.AsString;
+    finally
+      //tmp.Free;
+    end;
+  end;
 end;
 
 end.

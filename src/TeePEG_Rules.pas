@@ -2,8 +2,6 @@
 // 2017
 unit TeePEG_Rules;
 
-{$DEFINE TRACE}
-
 {
   "Parsing Expression Grammars" (PEG)
 
@@ -19,29 +17,35 @@ uses
 type
   TRule=class;
 
-  TStackItem=record
+  PSyntaxItem=^TSyntaxItem;
+
+  TSyntaxItem=record
     Position : Integer;
-    Rules : Array of TRule;
+    Rule : TRule;
+
+    Items : Array of PSyntaxItem;
   end;
 
   TParser=class
   private
     FPosition : Integer;
   protected
-    procedure Match(const ARule:TRule; const ALength:Integer);
-    function Push:Integer;
-    procedure Pop;
+    procedure Match(const AParent:PSyntaxItem; const ARule:TRule; const ALength:Integer);
+    procedure Pop(const AItem:PSyntaxItem);
   public
-    Stack : Array of TStackItem;
+    Syntax : PSyntaxItem;
     Text : String;
 
     function EndOfFile: Boolean; {$IFDEF INLINE}inline;{$ENDIF}
+    procedure Start(const AText:String);
+
     property Position:Integer read FPosition write FPosition;
   end;
 
   TRule=class
   protected
-    function Match(const AParser:TParser):Boolean; virtual; abstract;
+    function Match(const AParser:TParser):PSyntaxItem; virtual; abstract;
+    function Push(const APosition:Integer):PSyntaxItem;
   public
     function AsString:String; virtual; abstract;
   end;
@@ -60,7 +64,7 @@ type
   { &e }
   TAndPredicate=class(TPredicate)
   protected
-    function Match(const AParser:TParser):Boolean; override;
+    function Match(const AParser:TParser):PSyntaxItem; override;
   public
     function AsString:String; override;
   end;
@@ -68,12 +72,19 @@ type
   { !e }
   TNotPredicate=class(TPredicate)
   protected
-    function Match(const AParser:TParser):Boolean; override;
+    function Match(const AParser:TParser):PSyntaxItem; override;
   public
     function AsString:String; override;
   end;
 
-  TCharacterRule=class(TRule)
+  TTextRule=class(TRule)
+  protected
+    function CharacterMatch(const A,B:Char):Boolean;
+  public
+    CaseInsensitive : Boolean;
+  end;
+
+  TCharacterRule=class(TTextRule)
   protected
     InSet : Boolean;
   end;
@@ -81,7 +92,7 @@ type
   { 'x' }
   TCharacter=class(TCharacterRule)
   protected
-    function Match(const AParser:TParser):Boolean; override;
+    function Match(const AParser:TParser):PSyntaxItem; override;
   public
     Character : Char;
 
@@ -92,7 +103,7 @@ type
   { n-m }
   TCharacterRange=class(TCharacterRule)
   protected
-    function Match(const AParser:TParser):Boolean; override;
+    function Match(const AParser:TParser):PSyntaxItem; override;
   public
     Start,
     Finish : Char;
@@ -102,9 +113,9 @@ type
   end;
 
   { 'abc' }
-  TString=class(TRule)
+  TString=class(TTextRule)
   protected
-    function Match(const AParser:TParser):Boolean; override;
+    function Match(const AParser:TParser):PSyntaxItem; override;
   public
     Text : String;
 
@@ -115,7 +126,7 @@ type
   { . }
   TAnyCharacter=class(TRule)
   protected
-    function Match(const AParser:TParser):Boolean; override;
+    function Match(const AParser:TParser):PSyntaxItem; override;
   public
     function AsString:String; override;
   end;
@@ -124,7 +135,7 @@ type
 
   TChoice=class(TRule)
   private
-    function ToString(const Separator:String):String;
+    function Join(const Separator:String):String;
   protected
     procedure Add(const AItems: array of TRule);
   public
@@ -136,7 +147,7 @@ type
   { e1 e2 }
   TSequence=class(TChoice)
   protected
-    function Match(const AParser:TParser):Boolean; override;
+    function Match(const AParser:TParser):PSyntaxItem; override;
   public
     function AsString:String; override;
   end;
@@ -144,7 +155,7 @@ type
   { e1 / e2 }
   TPrioritized=class(TChoice)
   protected
-    function Match(const AParser:TParser):Boolean; override;
+    function Match(const AParser:TParser):PSyntaxItem; override;
   public
     function AsString:String; override;
   end;
@@ -152,7 +163,7 @@ type
   { [abcA-ZQRS_] }
   TCharacterSet=class(TPrioritized)
   protected
-    constructor InnerCreate;
+    Constructor InnerCreate;
   public
     Constructor Create(const AItems: array of TCharacterRule);
 
@@ -162,7 +173,7 @@ type
   { e* }
   TZeroOrMore=class(TOperator)
   protected
-    function Match(const AParser:TParser):Boolean; override;
+    function Match(const AParser:TParser):PSyntaxItem; override;
   public
     function AsString:String; override;
   end;
@@ -170,7 +181,7 @@ type
   { e+ }
   TOneOrMore=class(TOperator)
   protected
-    function Match(const AParser:TParser):Boolean; override;
+    function Match(const AParser:TParser):PSyntaxItem; override;
   public
     function AsString:String; override;
   end;
@@ -178,14 +189,14 @@ type
   { e? }
   TOptional=class(TOperator)  // Zero or One
   protected
-    function Match(const AParser:TParser):Boolean; override;
+    function Match(const AParser:TParser):PSyntaxItem; override;
   public
     function AsString:String; override;
   end;
 
   TNamedRule=class(TOperator)
   protected
-    function Match(const AParser:TParser):Boolean; override;
+    function Match(const AParser:TParser):PSyntaxItem; override;
   public
     Name : String;
 
@@ -197,9 +208,7 @@ var
   SingleQuote,
   DoubleQuote : TCharacter;
 
-  {$IFDEF TRACE}
   PEG_Log : TStrings;
-  {$ENDIF}
 
 implementation
 
@@ -208,12 +217,10 @@ uses
 
 procedure Trace(const ARule:TRule; const AStart:Integer; const AParser: TParser);
 begin
-  {$IFDEF TRACE}
   if PEG_Log<>nil then
      PEG_Log.Add(IntToStr(AParser.Position)+' { '+
           Copy(AParser.Text,AStart,AParser.Position-AStart)+' } '+
           ARule.ClassName+': '+ARule.AsString);
-  {$ENDIF}
 end;
 
 { TParser }
@@ -223,66 +230,80 @@ begin
   result:=FPosition>Length(Text);
 end;
 
+{ TRule }
+
+function TRule.Push(const APosition: Integer): PSyntaxItem;
+begin
+  New(result);
+  result.Rule:=Self;
+  result.Position:=APosition;
+end;
+
 { TSequenceRule }
 
 function TSequence.AsString: String;
 begin
-  result:=ToString(' ');
+  result:=Join(' ');
 end;
 
-function TSequence.Match(const AParser:TParser): Boolean;
+function TSequence.Match(const AParser:TParser): PSyntaxItem;
 var t : Integer;
-    tmp : Integer;
 begin
-  tmp:=AParser.Push;
+  result:=Push(AParser.Position);
 
   for t:=Low(Items) to High(Items) do
-      if not Items[t].Match(AParser) then
+      if Items[t].Match(AParser)=nil then
       begin
-        result:=False;
-        AParser.Pop;
+        AParser.Pop(result);
+        result:=nil;
         Exit;
       end;
 
-  result:=True;
-
-  Trace(Self,tmp,AParser);
+  Trace(Self,result.Position,AParser);
 end;
 
-procedure TParser.Match(const ARule: TRule; const ALength: Integer);
-var L,tmp : Integer;
+procedure TParser.Match(const AParent:PSyntaxItem; const ARule: TRule; const ALength: Integer);
+var L : Integer;
+    tmp : PSyntaxItem;
 begin
-  L:=High(Stack);
+  New(tmp);
 
-  tmp:=Length(Stack[L].Rules);
-  SetLength(Stack[L].Rules,tmp+1);
-  Stack[L].Rules[tmp]:=ARule;
+  tmp.Position:=FPosition;
+  tmp.Rule:=ARule;
+
+  L:=Length(AParent.Items);
+  SetLength(AParent.Items,L+1);
+
+  AParent.Items[L]:=tmp;
 
   Inc(FPosition,ALength);
 end;
 
-procedure TParser.Pop;
-var H : Integer;
+procedure DisposeItem(const AItem:PSyntaxItem);
+var t : Integer;
 begin
-  H:=High(Stack);
+  for t:=Low(AItem.Items) to High(AItem.Items) do
+      DisposeItem(AItem.Items[t]);
 
-  if H<0 then
-     raise Exception.Create('Error: Parser Stack empty');
-
-  FPosition:=Stack[H].Position;
-
-  SetLength(Stack,H);
+  Dispose(AItem);
 end;
 
-function TParser.Push: Integer;
-var L : Integer;
+procedure TParser.Pop(const AItem:PSyntaxItem);
 begin
-  L:=Length(Stack);
-  SetLength(Stack,L+1);
+  FPosition:=AItem.Position;
+  DisposeItem(AItem);
+end;
 
-  Stack[L].Position:=Position;
+procedure TParser.Start(const AText: String);
+begin
+  Text:=AText;
 
-  result:=Position;
+  if Syntax<>nil then
+     DisposeItem(Syntax);
+
+  New(Syntax);
+  Syntax.Position:=0;
+  Syntax.Rule:=nil;
 end;
 
 { TOperator }
@@ -301,6 +322,16 @@ begin
      result:=Rule.AsString;
 end;
 
+{ TTextRule }
+
+function TTextRule.CharacterMatch(const A,B:Char):Boolean;
+begin
+  if CaseInsensitive then
+     result:=UpCase(A)=UpCase(B)
+  else
+     result:=A=B;
+end;
+
 { TCharacter }
 
 Constructor TCharacter.Create(const AChar: Char);
@@ -309,7 +340,7 @@ begin
   Character:=AChar;
 end;
 
-function ToString(const C:Char):String;
+function CharToString(const C:Char):String;
 begin
   if C=SingleQuote.Character then
      result:=C
@@ -344,20 +375,22 @@ begin
         result:='['+SingleQuote.Character+']'
   else
   if InSet then
-     result:=ToString(Character)
+     result:=CharToString(Character)
   else
-     result:=SingleQuote.Character+ToString(Character)+SingleQuote.Character;
+     result:=SingleQuote.Character+CharToString(Character)+SingleQuote.Character;
 end;
 
-function TCharacter.Match(const AParser: TParser): Boolean;
+function TCharacter.Match(const AParser: TParser): PSyntaxItem;
 begin
-  result:=AParser.Text[AParser.Position]=Character;
-
-  if result then
+  if CharacterMatch(AParser.Text[AParser.Position],Character) then
   begin
-    AParser.Match(Self,1);
+    result:=Push(AParser.Position);
+
+    AParser.Match(result,Self,1);
     Trace(Self,AParser.Position-1,AParser);
-  end;
+  end
+  else
+    result:=nil;
 end;
 
 { TString }
@@ -374,35 +407,30 @@ begin
   result:='’';
 
   for t:=1 to Length(Text) do
-      result:=result+ToString(Text[t]);
+      result:=result+CharToString(Text[t]);
 
   result:=result+'’';
 end;
 
-function TString.Match(const AParser: TParser): Boolean;
+function TString.Match(const AParser: TParser): PSyntaxItem;
 var t : Integer;
 begin
-  // if AParser.Remain<Length(Text) then
-  //   result:=False
-  //else
-  begin
-    for t:=1 to Length(Text) do
-        if AParser.Text[AParser.FPosition+t-1]<>Text[t] then
-        begin
-          result:=False;
-          Exit;
-        end;
+  for t:=1 to Length(Text) do
+      if not CharacterMatch(AParser.Text[AParser.FPosition+t-1],Text[t]) then
+      begin
+        result:=nil;
+        Exit;
+      end;
 
-    result:=True;
+  result:=Push(AParser.Position);
 
-    AParser.Match(Self,Length(Text));
-    Trace(Self,AParser.Position-Length(Text),AParser);
-  end;
+  AParser.Match(result,Self,Length(Text));
+  Trace(Self,AParser.Position-Length(Text),AParser);
 end;
 
 { TChoice }
 
-constructor TChoice.Create(const AItems: array of TRule);
+Constructor TChoice.Create(const AItems: array of TRule);
 begin
   inherited Create;
   Add(AItems);
@@ -417,7 +445,7 @@ begin
       Items[t-Low(AItems)]:=AItems[t];
 end;
 
-function TChoice.ToString(const Separator: String): String;
+function TChoice.Join(const Separator: String): String;
 var L,
     t : Integer;
 begin
@@ -460,18 +488,28 @@ begin
      result:=result+']';
 end;
 
-function TCharacterRange.Match(const AParser: TParser): Boolean;
+function TCharacterRange.Match(const AParser: TParser): PSyntaxItem;
 var tmp : Char;
+    tmpMatch : Boolean;
 begin
   tmp:=AParser.Text[AParser.Position];
 
-  result:=(tmp>=Start) and (tmp<=Finish);
-
-  if result then
+  if CaseInsensitive then
   begin
-    AParser.Match(Self,1);
+    tmp:=UpCase(tmp);
+    tmpMatch:=(tmp>=UpCase(Start)) and (tmp<=UpCase(Finish));
+  end
+  else
+    tmpMatch:=(tmp>=Start) and (tmp<=Finish);
+
+  if tmpMatch then
+  begin
+    result:=Push(AParser.Position);
+    AParser.Match(result,Self,1);
     Trace(Self,AParser.Position-1,AParser);
-  end;
+  end
+  else
+    result:=nil;
 end;
 
 { TAnyCharacter }
@@ -481,13 +519,14 @@ begin
   result:='.';
 end;
 
-function TAnyCharacter.Match(const AParser: TParser): Boolean;
+function TAnyCharacter.Match(const AParser: TParser): PSyntaxItem;
 begin
-  result:=not AParser.EndOfFile;
-
-  if result then
+  if AParser.EndOfFile then
+     result:=nil
+  else
   begin
-    AParser.Match(Self,1);
+    result:=Push(AParser.Position);
+    AParser.Match(result,Self,1);
     Trace(Self,AParser.Position-1,AParser);
   end;
 end;
@@ -499,15 +538,15 @@ begin
   result:=inherited AsString+'*';
 end;
 
-function TZeroOrMore.Match(const AParser: TParser): Boolean;
+function TZeroOrMore.Match(const AParser: TParser): PSyntaxItem;
 var tmp : Integer;
 begin
-  result:=True;
+  result:=Push(AParser.Position);
 
   tmp:=AParser.Position;
 
   repeat
-  until not Rule.Match(AParser);
+  until Rule.Match(AParser)=nil;
 
   Trace(Self,tmp,AParser);
 end;
@@ -519,20 +558,21 @@ begin
   result:=inherited AsString+'+';
 end;
 
-function TOneOrMore.Match(const AParser: TParser): Boolean;
-var tmp : Integer;
+function TOneOrMore.Match(const AParser: TParser): PSyntaxItem;
 begin
-  tmp:=AParser.Position;
+  result:=Push(AParser.Position);
 
-  result:=Rule.Match(AParser);
-
-  if result then
+  if Rule.Match(AParser)=nil then
   begin
-
+    AParser.Pop(result);
+    result:=nil;
+  end
+  else
+  begin
     repeat
-    until not Rule.Match(AParser);
+    until Rule.Match(AParser)=nil;
 
-    Trace(Self,tmp,AParser);
+    Trace(Self,result.Position,AParser);
   end;
 end;
 
@@ -540,29 +580,26 @@ end;
 
 function TPrioritized.AsString: String;
 begin
-  result:=ToString(' / ');
+  result:=Join(' / ');
 end;
 
-function TPrioritized.Match(const AParser: TParser): Boolean;
-var tmp : Integer;
-    t : Integer;
+function TPrioritized.Match(const AParser: TParser): PSyntaxItem;
+var t : Integer;
 begin
   for t:=Low(Items) to High(Items) do
   begin
-    tmp:=AParser.Push;
+    result:=Push(AParser.Position);
 
-    if Items[t].Match(AParser) then
+    if Items[t].Match(AParser)<>nil then
     begin
-      result:=True;
-      Trace(Self,tmp,AParser);
-
+      Trace(Self,result.Position,AParser);
       Exit;
     end
     else
-      AParser.Pop;
+      AParser.Pop(result);
   end;
 
-  result:=False;
+  result:=nil;
 end;
 
 { TNotPredicate }
@@ -572,17 +609,17 @@ begin
   result:='!'+inherited AsString;
 end;
 
-function TNotPredicate.Match(const AParser: TParser): Boolean;
-var tmp : Integer;
+function TNotPredicate.Match(const AParser: TParser): PSyntaxItem;
 begin
-  tmp:=AParser.Push;
+  result:=Push(AParser.Position);
 
-  result:=not Rule.Match(AParser);
-
-  if result then
-     Trace(Self,tmp,AParser)
+  if Rule.Match(AParser)=nil then
+     Trace(Self,result.Position,AParser)
   else
-     AParser.Pop;
+  begin
+    AParser.Pop(result);
+    result:=nil;
+  end;
 end;
 
 { TAndPredicate }
@@ -592,16 +629,16 @@ begin
   result:='&'+inherited AsString;
 end;
 
-function TAndPredicate.Match(const AParser: TParser): Boolean;
-var tmp : Integer;
+function TAndPredicate.Match(const AParser: TParser): PSyntaxItem;
+var tmp : PSyntaxItem;
 begin
-  tmp:=AParser.Push;
+  tmp:=Push(AParser.Position);
 
   result:=Rule.Match(AParser);
 
-  Trace(Self,tmp,AParser);
+  Trace(Self,tmp.Position,AParser);
 
-  AParser.Pop;
+  AParser.Pop(tmp);
 end;
 
 { TNamedRule }
@@ -617,15 +654,17 @@ begin
   Name:=AName;
 end;
 
-function TNamedRule.Match(const AParser: TParser): Boolean;
-var tmp : Integer;
+function TNamedRule.Match(const AParser: TParser): PSyntaxItem;
 begin
-  tmp:=AParser.Position;
+  result:=Push(AParser.Position);
 
-  result:=Rule.Match(AParser);
-
-  if result then
-     Trace(Self,tmp,AParser);
+  if Rule.Match(AParser)=nil then
+  begin
+    AParser.Pop(result);
+    result:=nil;
+  end
+  else
+    Trace(Self,result.Position,AParser);
 end;
 
 { TOptional }
@@ -635,29 +674,21 @@ begin
   result:=inherited AsString+'?';
 end;
 
-function TOptional.Match(const AParser: TParser): Boolean;
-var tmp : Integer;
+function TOptional.Match(const AParser: TParser): PSyntaxItem;
 begin
-  tmp:=AParser.Position;
+  result:=Push(AParser.Position);
 
-  result:=True;
-
-  if Rule.Match(AParser) then
-     Trace(Self,tmp,AParser);
+  if Rule.Match(AParser)<>nil then
+     Trace(Self,result.Position,AParser);
 end;
 
 { TCharacterSet }
 
-function TCharacterSet.AsString: String;
-begin
-  result:='['+ToString('')+']';
-end;
-
-constructor TCharacterSet.InnerCreate;
+Constructor TCharacterSet.InnerCreate;
 begin
 end;
 
-constructor TCharacterSet.Create(const AItems: array of TCharacterRule);
+Constructor TCharacterSet.Create(const AItems: array of TCharacterRule);
 var t : Integer;
 begin
   InnerCreate;
@@ -670,6 +701,11 @@ begin
 
     Items[t-Low(AItems)]:=AItems[t];
   end;
+end;
+
+function TCharacterSet.AsString: String;
+begin
+  result:='['+Join('')+']';
 end;
 
 initialization
