@@ -18,13 +18,14 @@ type
   TRule=class;
 
   PSyntaxItem=^TSyntaxItem;
+  PSyntaxItems=Array of PSyntaxItem;
 
   TSyntaxItem=record
     Position,
     Length : Integer;
     Rule : TRule;
 
-    Items : Array of PSyntaxItem;
+    Items : PSyntaxItems;
   end;
 
   TParser=class
@@ -40,12 +41,13 @@ type
     Text : String;
 
     function EndOfFile: Boolean; {$IFDEF INLINE}inline;{$ENDIF}
+    function Extract(const AItem:PSyntaxItem):String;
     procedure Start(const AText:String);
 
     property Position:Integer read FPosition write FPosition;
   end;
 
-  TRule=class
+  TRule=class abstract
   protected
     function Match(const AParser:TParser):PSyntaxItem; virtual; abstract;
     function Push(const APosition:Integer):PSyntaxItem;
@@ -138,13 +140,15 @@ type
 
   TChoice=class(TRule)
   private
-    function Join(const Separator:String):String;
+    function Join(const Separator:String=''):String;
   protected
-    procedure Add(const AItems: array of TRule);
+    Parenthize : Boolean;
+
+    procedure Add(const AItems: TRuleArray);
   public
     Items : TRuleArray;
 
-    Constructor Create(const AItems:Array of TRule);
+    Constructor Create(const AItems:TRuleArray);
   end;
 
   { e1 e2 }
@@ -169,6 +173,14 @@ type
     Constructor InnerCreate;
   public
     Constructor Create(const AItems: array of TCharacterRule);
+
+    function AsString:String; override;
+  end;
+
+  { [a][b][c][1-5] }
+  TCharacterSequence=class(TSequence)
+  public
+    Constructor Create(const AItems:TRuleArray);
 
     function AsString:String; override;
   end;
@@ -204,6 +216,9 @@ type
     Name : String;
 
     Constructor Create(const AName:String; const ARule:TRule);
+
+    Destructor Destroy; override;
+
     function AsString:String; override;
   end;
 
@@ -236,45 +251,9 @@ begin
   result:=FPosition>Length(Text);
 end;
 
-{ TRule }
-
-function TRule.Push(const APosition: Integer): PSyntaxItem;
+function TParser.Extract(const AItem: PSyntaxItem): String;
 begin
-  New(result);
-  result.Rule:=Self;
-  result.Position:=APosition;
-end;
-
-{ TSequenceRule }
-
-function TSequence.AsString: String;
-begin
-  result:=Join(' ');
-end;
-
-function TSequence.Match(const AParser:TParser): PSyntaxItem;
-var t : Integer;
-    tmp : PSyntaxItem;
-begin
-  result:=Push(AParser.Position);
-
-  for t:=Low(Items) to High(Items) do
-  begin
-    tmp:=Items[t].Match(AParser);
-
-    if tmp=nil then
-    begin
-      AParser.Pop(result);
-      result:=nil;
-      Exit;
-    end
-    else
-      AParser.Add(result,tmp);
-  end;
-
-  result.Length:=AParser.Position-result.Position+1;
-
-  Log(Self,result.Position,AParser);
+  result:=Copy(Text,AItem.Position,AItem.Length);
 end;
 
 function TParser.Advance(const ARule:TRule; const ALength:Integer):PSyntaxItem;
@@ -312,6 +291,15 @@ begin
   DisposeItem(AItem);
 end;
 
+function NewItem(const ARule:TRule=nil; const APosition:Integer=0):PSyntaxItem;
+begin
+  New(result);
+
+  result.Rule:=ARule;
+  result.Position:=APosition;
+  result.Length:=0;
+end;
+
 procedure TParser.Start(const AText: String);
 begin
   Text:=AText;
@@ -319,9 +307,46 @@ begin
   if Syntax<>nil then
      DisposeItem(Syntax);
 
-  New(Syntax);
-  Syntax.Position:=0;
-  Syntax.Rule:=nil;
+  Syntax:=NewItem;
+end;
+
+{ TRule }
+
+function TRule.Push(const APosition: Integer): PSyntaxItem;
+begin
+  result:=NewItem(Self,APosition);
+end;
+
+{ TSequenceRule }
+
+function TSequence.AsString: String;
+begin
+  result:=Join(' ');
+end;
+
+function TSequence.Match(const AParser:TParser): PSyntaxItem;
+var t : Integer;
+    tmp : PSyntaxItem;
+begin
+  result:=Push(AParser.Position);
+
+  for t:=Low(Items) to High(Items) do
+  begin
+    tmp:=Items[t].Match(AParser);
+
+    if tmp=nil then
+    begin
+      AParser.Pop(result);
+      result:=nil;
+      Exit;
+    end
+    else
+      AParser.Add(result,tmp);
+  end;
+
+  result.Length:=AParser.Position-result.Position;
+
+  Log(Self,result.Position,AParser);
 end;
 
 { TOperator }
@@ -358,16 +383,26 @@ begin
   Character:=AChar;
 end;
 
-function CharToString(const C:Char):String;
+function CharToString(const C:Char; const Quoted:Boolean=False):String;
 begin
   if C=SingleQuote.Character then
      result:=C
   else
   if C='[' then
-     result:='\['
+  begin
+    if Quoted then
+       result:=C
+    else
+       result:='\[';
+  end
   else
   if C=']' then
-     result:='\]'
+  begin
+    if Quoted then
+       result:=C
+    else
+       result:='\]';
+  end
   else
   if (C<' ') or (C>'z') then
      case C of
@@ -395,7 +430,7 @@ begin
   if InSet then
      result:=CharToString(Character)
   else
-     result:=SingleQuote.Character+CharToString(Character)+SingleQuote.Character;
+     result:=SingleQuote.Character+CharToString(Character,True)+SingleQuote.Character;
 end;
 
 function TCharacter.Match(const AParser: TParser): PSyntaxItem;
@@ -440,13 +475,15 @@ end;
 
 { TChoice }
 
-Constructor TChoice.Create(const AItems: array of TRule);
+Constructor TChoice.Create(const AItems: TRuleArray);
 begin
   inherited Create;
+
+  Parenthize:=True;
   Add(AItems);
 end;
 
-procedure TChoice.Add(const AItems: array of TRule);
+procedure TChoice.Add(const AItems: TRuleArray);
 var t : Integer;
 begin
   SetLength(Items,Length(AItems));
@@ -455,20 +492,17 @@ begin
       Items[t-Low(AItems)]:=AItems[t];
 end;
 
-function TChoice.Join(const Separator: String): String;
-var L,
-    t : Integer;
+function TChoice.Join(const Separator: String=''): String;
+var t : Integer;
 begin
   result:='';
-
-  L:=Length(Items);
 
   for t:=Low(Items) to High(Items) do
   begin
     if t>Low(Items) then
        result:=result+Separator;
 
-    if (Separator=' ') and (Items[t] is TChoice) and (L>1) then
+    if (Separator=' ') and (Items[t] is TChoice) and TChoice(Items[t]).Parenthize then
        result:=result+'('+Items[t].AsString+')'
     else
        result:=result+Items[t].AsString;
@@ -477,7 +511,7 @@ end;
 
 { TCharacterRange }
 
-constructor TCharacterRange.Create(const AStart, AFinish: Char);
+Constructor TCharacterRange.Create(const AStart, AFinish: Char);
 begin
   inherited Create;
 
@@ -615,9 +649,8 @@ begin
     begin
       AParser.Add(result,tmp);
 
-      //AParser.Match(result,Self,AParser.Position-result.Position);
-
-      Log(Self,result.Position,AParser);
+      if PEG_Log<>nil then
+         Log(Self,result.Position,AParser);
 
       Exit;
     end
@@ -675,15 +708,21 @@ end;
 
 { TNamedRule }
 
-function TNamedRule.AsString: String;
-begin
-  result:=Name;
-end;
-
-constructor TNamedRule.Create(const AName: String; const ARule: TRule);
+Constructor TNamedRule.Create(const AName: String; const ARule: TRule);
 begin
   inherited Create(ARule);
   Name:=AName;
+end;
+
+destructor TNamedRule.Destroy;
+begin
+  Rule.Free;
+  inherited;
+end;
+
+function TNamedRule.AsString: String;
+begin
+  result:=Name;
 end;
 
 function TNamedRule.Match(const AParser: TParser): PSyntaxItem;
@@ -701,7 +740,6 @@ begin
   else
   begin
     AParser.Add(result,tmp);
-    //AParser.Match(result,Self,AParser.Position-result.Position);
     Log(Self,result.Position,AParser);
   end;
 end;
@@ -731,9 +769,10 @@ end;
 
 Constructor TCharacterSet.InnerCreate;
 begin
+  Parenthize:=False;
 end;
 
-Constructor TCharacterSet.Create(const AItems: array of TCharacterRule);
+Constructor TCharacterSet.Create(const AItems: Array of TCharacterRule);
 var t : Integer;
 begin
   InnerCreate;
@@ -750,7 +789,20 @@ end;
 
 function TCharacterSet.AsString: String;
 begin
-  result:='['+Join('')+']';
+  result:='['+Join+']';
+end;
+
+{ TCharacterSequence }
+
+Constructor TCharacterSequence.Create(const AItems: TRuleArray);
+begin
+  inherited;
+  Parenthize:=False;
+end;
+
+function TCharacterSequence.AsString: String;
+begin
+  result:=Join;
 end;
 
 initialization

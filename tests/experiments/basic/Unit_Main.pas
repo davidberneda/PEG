@@ -39,6 +39,8 @@ type
 
     PEG : TPEG;
     Grammar : TGrammar;
+
+    procedure VerifyDefaultGrammar;
   public
     { Public declarations }
   end;
@@ -51,49 +53,7 @@ implementation
 {$R *.dfm}
 
 uses
-  TeePEG_Rules;
-
-procedure AddSyntax(const PEG:TPeg; const ATree:TTreeView);
-
-  function NodeFrom(const AParent:TTreeNode; const AItem:PSyntaxItem):TTreeNode;
-  var tmp : String;
-  begin
-    if AItem.Rule=nil then
-       tmp:='?'
-    else
-    if AItem.Rule is TNamedRule then
-       tmp:=TNamedRule(AItem.Rule).Name
-    else
-       tmp:=AItem.Rule.ClassName;
-
-    tmp:=tmp+' -> '+IntToStr(AItem.Position);
-
-    if AItem.Length>0 then
-       tmp:=tmp+' '+Copy(PEG.Grammar.Parser.Text,AItem.Position,AItem.Length);
-
-    result:=ATree.Items.AddChildObject(AParent,tmp,AItem);
-  end;
-  
-  procedure ShowStack(const AParent:TTreeNode; const AItem:PSyntaxItem);
-  var t : Integer;
-      tmp : TTreeNode;
-  begin
-    tmp:=NodeFrom(AParent,AItem);
-
-    for t:=Low(AItem.Items) to High(AItem.Items) do
-        ShowStack(tmp,AItem.Items[t]);
-  end;
-
-begin
-  ATree.Items.BeginUpdate;
-  try
-    ATree.Items.Clear;
-
-    ShowStack(nil,Peg.Grammar.Parser.Syntax);
-  finally
-    ATree.Items.EndUpdate;
-  end;
-end;
+  TeePEG_Rules, VCLPEG_Tree, Math;
 
 procedure TForm1.CBTraceClick(Sender: TObject);
 begin
@@ -108,25 +68,26 @@ begin
   PEG:=TPEG.Create;
 
   MemoRules.Lines.Text:=PEG.Grammar.AsString;
+
+  VerifyDefaultGrammar;
 end;
 
 procedure TForm1.Button1Click(Sender: TObject);
 
-  function FirstLines(const Quantity:Integer):String;
-  var t : Integer;
+  function TestGrammar:String;
   begin
-    result:='';
-
-    for t:=0 to Quantity-1 do
+    if PageControl1.ActivePage=TabPEG then
     begin
-      if t>0 then
-         result:=result+#13#10;
-
-      result:=result+PEGPEG.Lines[t];
+      SingleQuote.Character:=#146;
+      result:=PEGPEG.Text;
+    end
+    else
+    begin
+      SingleQuote.Character:='''';
+      result:=MathPEG.Text;
     end;
   end;
 
-var tmp : String;
 begin
   if PEG_Log<>nil then
      PEG_Log.BeginUpdate;
@@ -135,40 +96,17 @@ begin
     if PEG_Log<>nil then
        PEG_Log.Clear;
 
-    //tmp:=Memo1.Lines[21]; //FirstLines(22);
-
-    // tmp:='11';
-
-    if PageControl1.ActivePage=TabPEG then
-    begin
-      tmp:=PEGPEG.Text;
-      SingleQuote.Character:=#146;
-    end
-    else
-    begin
-      tmp:=MathPEG.Text;
-      SingleQuote.Character:='''';
-    end;
-
-    //tmp:='\t';
-
     try
-      Grammar:=PEG.Load(tmp{Memo1.Lines});
+      Grammar.Free;
+      Grammar:=nil;
 
-      {
-      if Grammar<>nil then
-      begin
-        MemoRules.Lines.Add('');
-        MemoRules.Lines.Add(Grammar.AsString);
-      end;
-      }
+      Grammar:=PEG.Load(TestGrammar);
 
     finally
       if CBTokens.Checked then
-         AddSyntax(PEG, TreeView1);
+         TPEGTree.AddSyntax(PEG.Grammar.Parser, TreeView1);
 
-      MemoRules.Clear;
-      MemoRules.Lines.Add('Parsed: '+tmp);
+      MemoRules.Lines.Text:=Grammar.AsString;
     end;
 
   finally
@@ -179,21 +117,50 @@ end;
 
 procedure TForm1.FormDestroy(Sender: TObject);
 begin
-//  Grammar.Free;
+  Grammar.Free;
   PEG.Free;
 end;
 
 procedure TForm1.MemoEvalChange(Sender: TObject);
-var tmp : TGrammar;
 begin
   if Grammar<>nil then
+     MemoOutput.Text:=Grammar.Load(MemoEval.Text).AsString;
+end;
+
+procedure TForm1.VerifyDefaultGrammar;
+
+  function CleanPEG:TStrings;
+  var t : Integer;
+      tmp : String;
   begin
-    tmp:=Grammar.Load(MemoEval.Text);
-    try
-      MemoOutput.Text:=tmp.AsString;
-    finally
-      //tmp.Free;
+    result:=TStringList.Create;
+
+    for t:=0 to PEGPEG.Lines.Count-1 do
+    begin
+      tmp:=Trim(PEGPEG.Lines[t]);
+
+      if (tmp<>'') and (Copy(tmp,1,1)<>'#') then
+         result.Add(tmp)
     end;
+  end;
+
+var A,B : TStrings;
+      t : Integer;
+begin
+  A:=CleanPEG;
+  try
+    B:=MemoRules.Lines;
+
+    for t:=0 to Min(A.Count,B.Count)-1 do
+    begin
+      if A[t]<>B[t] then
+         raise Exception.Create('Different line: '+IntToStr(t)+' '+A[t]);
+    end;
+
+    if A.Count<>B.Count then
+       ShowMessage('Number of lines differ: '+IntToStr(A.Count)+' '+IntToStr(B.Count));
+  finally
+    A.Free;
   end;
 end;
 

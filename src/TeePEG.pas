@@ -16,29 +16,34 @@ uses
 
 type
   TPEG=class
+  private
+    FGrammar : TGrammar;
   public
-    Grammar : TGrammar;
-
     Constructor Create;
     Destructor Destroy; override;
 
     function Load(const S:String):TGrammar; overload;
     function Load(const S:TStrings):TGrammar; overload;
+
+    property Grammar:TGrammar read FGrammar;
   end;
 
 implementation
+
+uses
+  TeePEG_Grammar_Default;
 
 { TPEG }
 
 Constructor TPEG.Create;
 begin
   inherited Create;
-  Grammar:=TPEGGrammar.Create;
+  FGrammar:=TPEGGrammar.Create;
 end;
 
 Destructor TPEG.Destroy;
 begin
-  Grammar.Free;
+  FGrammar.Free;
   inherited;
 end;
 
